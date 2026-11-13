@@ -72,57 +72,140 @@ def detail_text(page):
     return "\n".join(out)
 
 
-def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
-    """Fetch today's + yesterday's (UTC) ATCSCC lists, then details of relevant advisories.
+def _is_relevant(title, control=""):
+    return bool(RELEVANT.search(title or "") or NATIONAL_TITLE.search(control or ""))
 
-    cache: {url: parsed advisory} from previous runs (advisories are immutable once issued).
+
+def _fetch_detail(url, http_get, parse_advisory_text, meta):
+    r = http_get(url, timeout=40, tries=2)
+    if not r.get("ok"):
+        return None, r.get("error")
+    txt = detail_text(r["body"])
+    if not re.search(r"ADVZY\s+\d+", txt):
+        return None, "not an advisory page"
+    return parse_advisory_text(txt, url=url, meta=meta), None
+
+
+def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, max_n=400):
+    """Fallback when the list page is empty/broken: walk advisory numbers via the detail pages.
+    Detail pages are cached (advisories never change once sent), so later runs only probe new numbers."""
+    from concurrent.futures import ThreadPoolExecutor
+    mmddyyyy = day.strftime("%m%d%Y")
+    found, n, misses = [], 1, 0
+    known = {}
+    for u, a in cache.items():
+        if f"adv_date={mmddyyyy}&" in u:
+            try:
+                known[int(re.search(r"advn=(\d+)", u).group(1))] = a
+            except Exception:
+                pass
+    hard_fail = 0
+    incomplete = False
+    while n <= max_n:
+        batch = list(range(n, n + 8))
+        todo = [k for k in batch if k not in known]
+        res = {}
+        if todo:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                futs = {k: ex.submit(_fetch_detail, detail_url(mmddyyyy, k), http_get, parse_advisory_text, {"number": str(k).zfill(3)}) for k in todo}
+                for k, f in futs.items():
+                    res[k] = f.result()
+        stop = False
+        for k in batch:
+            if k in known:
+                found.append(known[k]); misses = hard_fail = 0
+                continue
+            a, err = res.get(k, (None, "skipped"))
+            if a:
+                a["adv_date"] = mmddyyyy
+                if not _is_relevant(a.get("type") or a.get("title")) and not a.get("is_ground_stop") and a.get("scope") != "national":
+                    a = {"url": a.get("url"), "number": a.get("number"), "title": a.get("title"), "type": a.get("type"),
+                         "issued_utc": a.get("issued_utc"), "adv_date": mmddyyyy, "irrelevant": True}
+                found.append(a); misses = hard_fail = 0
+            elif err == "not an advisory page":
+                misses += 1
+            else:
+                hard_fail += 1
+                errors.append(f"Advisory {k} ({mmddyyyy}): {err}")
+            if misses >= max_misses:
+                stop = True; break
+            if hard_fail >= 6:
+                stop = True; incomplete = True; break
+        if stop:
+            break
+        n += 8
+    return found, incomplete
+
+
+def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
+    """Today's + yesterday's (UTC) ATCSCC advisories.
+
+    1. List page (fast). FAA's list sometimes answers "NO ADVISORIES MATCH" even while advisories exist
+       (observed live 2026-11-13 during a nationwide ground stop), so an empty list is never trusted.
+    2. Fallback: walk detail pages by advisory number (cached between runs).
+    cache: {url: advisory} from previous runs.
     """
     cache = cache or {}
-    checked, errors, items, list_rows = [], [], [], []
-    ok_days = 0
-    for day in (now, now - dt.timedelta(days=1)):
+    checked, errors, items, latest = [], [], [], None
+    today_ok = False
+    stubs = []
+    for idx, day in enumerate((now, now - dt.timedelta(days=1))):
         u = list_url(day)
         r = http_get(u, timeout=45)
-        entry = {"url": u, "day": day.strftime("%Y-%m-%d"), "ok": bool(r.get("ok"))}
-        if not r.get("ok"):
+        entry = {"url": u, "day": day.strftime("%Y-%m-%d"), "ok": False, "method": "list"}
+        rows = []
+        if r.get("ok"):
+            cap, rows, no_match, valid = parse_list(r["body"])
+            entry.update(caption=cap, rows=len(rows), no_match=no_match, valid=valid)
+        else:
             entry["error"] = r.get("error")
-            errors.append(f"List {entry['day']}: {r.get('error')}")
-            checked.append(entry)
-            continue
-        cap, rows, no_match, valid = parse_list(r["body"])
-        entry.update(caption=cap, rows=len(rows), no_match=no_match, valid=valid)
-        if not valid:
-            entry["ok"] = False
-            errors.append(f"List {entry['day']}: unrecognised page (FAA format change or error page)")
+        day_items = []
+        if rows:
+            entry["ok"] = True
+            for row in rows:
+                if idx == 0 and latest is None:
+                    latest = {"number": row["number"], "brief": row["brief"], "send_time": row["send_time"], "url": row["url"]}
+                if not _is_relevant(row["brief"], row["control"]):
+                    continue
+                url = row["url"]
+                a = dict(cache[url]) if url in cache and cache[url].get("title") and not cache[url].get("detail_missing") else None
+                if a is None:
+                    a, err = _fetch_detail(url, http_get, parse_advisory_text,
+                                           {"title": row["brief"], "number": row["number"], "control": row["control"]})
+                    if a is None:
+                        errors.append(f"Advisory {row['number']} detail: {err}")
+                        a = {"number": row["number"], "title": f"ATCSCC ADVZY {row['number']} {row['control']} {row['date']} {row['brief']}",
+                             "type": row["brief"].upper(), "url": url, "detail_missing": True,
+                             "is_ground_stop": bool(re.search(r"GROUND\s*STOP|\bGS\b", row["brief"], re.I)),
+                             "scope": "national" if NATIONAL_TITLE.search(row["brief"]) else "unknown",
+                             "action": "cancellation" if re.search(r"\bCNX\b|CANCEL", row["brief"], re.I) else "issued"}
+                a.update(list_control=row["control"], list_brief=row["brief"], send_time=row["send_time"], adv_date=row["adv_date"])
+                day_items.append(a)
         else:
-            ok_days += 1
-            list_rows += rows
+            entry["fallback"] = "detail-walk"
+            entry["method"] = "detail-walk"
+            walked, incomplete = _probe_day(day, http_get, parse_advisory_text, cache, errors)
+            entry["walked"] = len(walked)
+            entry["incomplete"] = incomplete
+            stubs += [a for a in walked if a.get("irrelevant")]
+            if walked and not incomplete:
+                entry["ok"] = True
+                if idx == 0:
+                    top = max(walked, key=lambda a: int(re.sub(r"\D", "", str(a.get("number") or 0)) or 0))
+                    latest = {"number": top.get("number"), "brief": top.get("type"), "send_time": top.get("signature"), "url": top.get("url")}
+            for a in walked:
+                if a.get("irrelevant"):
+                    continue
+                if _is_relevant(a.get("type") or a.get("title"), a.get("list_control") or "") or a.get("is_ground_stop") or a.get("scope") == "national":
+                    day_items.append(a)
+            if not walked and idx == 0:
+                errors.append(f"Advisories for {entry['day']}: list page returned no rows and no advisories could be read by number")
+        if idx == 0:
+            today_ok = entry["ok"]
+        for a in day_items:
+            a["listed_now"] = True
+        items += day_items
         checked.append(entry)
-    today_ok = checked[0]["ok"] if checked else False
-    latest = None
-    for row in list_rows:
-        if latest is None:
-            latest = {"number": row["number"], "brief": row["brief"], "send_time": row["send_time"], "url": row["url"]}
-        if not RELEVANT.search(row["brief"]) and not NATIONAL_TITLE.search(row["control"] or ""):
-            continue
-        url = row["url"]
-        if url in cache and cache[url].get("title"):
-            a = dict(cache[url])
-        else:
-            r = http_get(url, timeout=40)
-            if not r.get("ok"):
-                errors.append(f"Advisory {row['number']}: {r.get('error')}")
-                a = {"number": row["number"], "title": f"ATCSCC ADVZY {row['number']} {row['control']} {row['date']} {row['brief']}",
-                     "type": row["brief"].upper(), "url": url, "detail_missing": True,
-                     "is_ground_stop": bool(re.search(r"GROUND\s*STOP|\bGS\b", row["brief"], re.I))}
-            else:
-                txt = detail_text(r["body"])
-                a = parse_advisory_text(txt, url=url, meta={"title": row["brief"], "number": row["number"], "control": row["control"]})
-        a["list_control"] = row["control"]
-        a["list_brief"] = row["brief"]
-        a["send_time"] = row["send_time"]
-        a["adv_date"] = row["adv_date"]
-        a["listed_now"] = True
-        items.append(a)
-    return {"ok": today_ok, "partial": ok_days < 2, "items": items, "errors": errors, "checked": checked,
-            "latest": latest, "list_count": len(list_rows)}
+    return {"ok": today_ok, "partial": not all(c["ok"] for c in checked), "items": items, "errors": errors,
+            "checked": checked, "latest": latest, "list_count": sum(c.get("rows", 0) or c.get("walked", 0) for c in checked),
+            "stubs": stubs}

@@ -401,6 +401,8 @@ def merge_advisory_cache(adv, prev, now):
         issued = parse_iso(a.get("issued_utc")) or parse_iso(a.get("cached_at"))
         if issued and now - issued > dt.timedelta(hours=ADV_CACHE_HOURS):
             continue
+        if a.get("irrelevant"):
+            continue
         b = dict(a)
         b["listed_now"] = False
         d = a.get("adv_date") or ""
@@ -409,7 +411,7 @@ def merge_advisory_cache(adv, prev, now):
         merged.append(b)
     adv["items"] = merged
     cache = []
-    for a in merged:
+    for a in merged + [x for x in adv.get("stubs") or [] if x.get("url") not in cur]:
         c = {k: v for k, v in a.items() if k not in ("listed_now", "vanished")}
         c.setdefault("cached_at", iso(now))
         cache.append(c)
@@ -735,6 +737,13 @@ def run(out_path, prev_path=None, fixtures=None):
         news = fixtures["news"]
     else:
         news = fetch_news(now)
+    # Corroboration only: reporting can flag a mismatch, never set or clear FAA status.
+    rep = [i for i in news.get("items", []) if re.search(r"nation\s*wide|national|across (the )?(us|u\.s\.|country)|all (us )?flights", i.get("title") or "", re.I)
+           and re.search(r"ground stop|grounded|halt", i.get("title") or "", re.I) and (i.get("age_hours") or 99) <= 6]
+    nat["reports_recent"] = len(rep)
+    if rep and nat["status"] in ("none_found", "unverified"):
+        nat["reports_mismatch"] = ("News outlets reported a nationwide ground stop within the last 6 hours, "
+                                   "but FAA advisory data checked by Groundwatch does not currently confirm one. Check FAA directly.")
     sn = src_state("news", prev_sources.get("news"), bool(news.get("ok")), now,
                    {"provider": "Google News RSS", "count": len(news.get("items", []))},
                    "; ".join(news.get("errors", [])) or None)
