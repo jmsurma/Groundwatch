@@ -31,6 +31,7 @@ UA = "Groundwatch/1.0 (FAA ground stop dashboard; +https://github.com/jmsurma/gr
 
 URL_AIRPORT_XML = "https://nasstatus.faa.gov/api/airport-status-information"
 URL_NAS = "https://nasstatus.faa.gov/"
+URL_EVENTS = "https://nasstatus.faa.gov/api/airport-events"
 URL_ADB = "https://www.fly.faa.gov/adv/advADB"
 URL_ADV_FORM = "https://www.fly.faa.gov/adv/advAdvisoryForm"
 # Filled in from live discovery; see ADVISORY_LIST_* below.
@@ -323,10 +324,21 @@ def parse_advisory_text(text, url=None, meta=None):
     reason = (fields.get("IMPACTING CONDITION") or fields.get("REASON") or fields.get("CAUSE") or
               fields.get("REMARKS") or fields.get("COMMENTS"))
     ctl = (fields.get("CTL ELEMENT") or fields.get("CTL ELMNT") or fields.get("CONTROL ELEMENT") or "").upper()
+    dest = (fields.get("DESTINATION AIRPORT") or fields.get("DESTINATION AIRPORTS") or fields.get("ARRIVAL AIRPORT") or "").upper().strip()
+    fac_incl = (fields.get("FACILITIES INCLUDED") or fields.get("DEP FACILITIES INCLUDED") or "").upper().strip()
+    list_ctl = (meta.get("control") or "").upper()
+    if not ctl:
+        first = list_ctl.split("/")[0].strip()
+        if dest and dest != "ALL":
+            ctl = dest.split()[0]
+        elif first and first not in ("DCC", "ATCSCC"):
+            ctl = first
     etype = (fields.get("ELEMENT TYPE") or "").upper()
     flt_incl = fields.get("FLT INCL") or fields.get("FLIGHTS INCLUDED") or ""
     body_up = text.upper()
     is_gs = bool(GS_PAT.search(adv_type)) or ("GROUND STOP PERIOD" in fields)
+    if not adv_type and meta.get("title"):
+        adv_type = meta["title"].upper()
     action = "issued"
     if CNX_PAT.search(adv_type) or "CNX PERIOD" in fields or "GS CNX PERIOD" in fields:
         action = "cancellation"
@@ -338,7 +350,8 @@ def parse_advisory_text(text, url=None, meta=None):
     # scope classification
     airlines = sorted(set(AIRLINE_HINT.findall(flt_incl.upper())))
     national_hit = bool(NATIONAL_PAT.search(adv_type) or NATIONAL_PAT.search(body_up[:1500]))
-    ctl_all = ctl in ("ALL", "NAS", "ALL AIRPORTS", "CONUS") or etype in ("NAS", "NATIONAL")
+    ctl_all = (ctl in ("ALL", "NAS", "ALL AIRPORTS", "CONUS") or etype in ("NAS", "NATIONAL") or dest == "ALL"
+               or (fac_incl.startswith("ALL") and not dest and not ctl))
     if airlines and not re.search(r"\bALL\b", flt_incl.upper().replace("ALL FLIGHTS", "")) and (ctl_all or national_hit or "CDM" in adv_type):
         scope = "airline"
     elif ctl_all or national_hit:
@@ -357,6 +370,7 @@ def parse_advisory_text(text, url=None, meta=None):
         "reason": reason, "issued_utc": iso(issued), "signature": signature,
         "event_window": parse_window(event, ref), "effective_window": parse_window(eff, ref),
         "probability_of_extension": fields.get("PROBABILITY OF EXTENSION"),
+        "expect_update": fields.get("EXPECT UPDATE"), "destination": dest or None, "facilities_included": fac_incl or None,
         "dep_facilities": fields.get("DEP FACILITIES INCLUDED"),
         "url": url, "excerpt": "\n".join(lines[:40])[:2400],
     }
@@ -364,10 +378,42 @@ def parse_advisory_text(text, url=None, meta=None):
 
 # The advisory list/detail endpoints and their HTML shapes are confirmed against
 # live responses captured by discover.py; see fetch_advisories().
-def fetch_advisories(now):
+def fetch_advisories(now, prev=None):
     """Return {"ok": bool, "items": [...], "errors": [...], "checked": [...]}"""
     from advisories import fetch_advisory_list  # kept separate so it can track FAA format changes
-    return fetch_advisory_list(now, http_get, parse_advisory_text)
+    cache = {a["url"]: a for a in ((prev or {}).get("advisory_cache") or []) if a.get("url")}
+    return fetch_advisory_list(now, http_get, parse_advisory_text, cache)
+
+
+ADV_CACHE_HOURS = 36
+
+
+def merge_advisory_cache(adv, prev, now):
+    """Advisories are immutable. Keep ones seen in the last 36h so a UTC date rollover or a
+    list glitch never silently drops a stop. Flags advisories that vanished from a list we did fetch."""
+    cur = {a["url"]: a for a in adv.get("items", []) if a.get("url")}
+    ok_days = {c["day"] for c in adv.get("checked", []) if c.get("ok")}
+    merged = list(adv.get("items", []))
+    for a in (prev or {}).get("advisory_cache") or []:
+        u = a.get("url")
+        if not u or u in cur:
+            continue
+        issued = parse_iso(a.get("issued_utc")) or parse_iso(a.get("cached_at"))
+        if issued and now - issued > dt.timedelta(hours=ADV_CACHE_HOURS):
+            continue
+        b = dict(a)
+        b["listed_now"] = False
+        d = a.get("adv_date") or ""
+        day = f"{d[4:8]}-{d[0:2]}-{d[2:4]}" if len(d) == 8 else None
+        b["vanished"] = bool(day and day in ok_days)
+        merged.append(b)
+    adv["items"] = merged
+    cache = []
+    for a in merged:
+        c = {k: v for k, v in a.items() if k not in ("listed_now", "vanished")}
+        c.setdefault("cached_at", iso(now))
+        cache.append(c)
+    return cache
 
 
 # ------------------------------------------------------------ news
@@ -414,75 +460,99 @@ def fetch_news(now):
 
 # ----------------------------------------------------- national roll-up
 def build_national(adv_res, prev, now):
-    """Combine advisories into national/airline/airport restriction chains with explicit states."""
+    """Combine advisories into restriction chains (national / airline / facility / airport) with explicit states."""
     prev_nat = (prev or {}).get("national", {}) or {}
     prev_items = {i["key"]: i for i in prev_nat.get("restrictions", []) if i.get("key")}
-    gs = [a for a in adv_res.get("items", []) if a.get("is_ground_stop")]
+    items = adv_res.get("items", [])
+    gs = [a for a in items if a.get("is_ground_stop")]
+    related = [a for a in items if not a.get("is_ground_stop") and a.get("scope") == "national"]
     chains = {}
-    for a in sorted(gs, key=lambda x: (x.get("issued_utc") or "", int(x.get("number") or 0))):
+    for a in sorted(gs, key=lambda x: (x.get("issued_utc") or "", int(re.sub(r"\D", "", str(x.get("number") or 0)) or 0))):
         key_el = a.get("ctl_element") or "?"
+        if a["scope"] == "national":
+            key_el = "ALL"
         if a["scope"] == "airline":
-            key_el = "AIRLINE:" + "/".join(a["airlines"]) if a["airlines"] else "AIRLINE:" + key_el
+            key_el = "AIRLINE:" + ("/".join(a["airlines"]) if a.get("airlines") else key_el)
         key = f"{a['scope']}|{key_el}"
         c = chains.setdefault(key, {"key": key, "scope": a["scope"], "ctl_element": a.get("ctl_element"),
-                                    "airlines": a.get("airlines"), "advisories": []})
-        c["advisories"].append(a)
+                                    "airlines": a.get("airlines"), "advs": []})
+        c["advs"].append(a)
     out = []
     for key, c in chains.items():
-        advs = c["advisories"]
+        advs = c.pop("advs")
+        prev_end = None
+        for i, a in enumerate(advs):
+            w = a.get("event_window") or a.get("effective_window") or {}
+            end = w.get("end")
+            if a["action"] == "cancellation":
+                a["role"] = "cancellation"
+            elif i == 0:
+                a["role"] = "issued"
+            elif prev_end and end and end > prev_end:
+                a["role"] = "extension"
+            else:
+                a["role"] = "update"
+            if a["action"] != "cancellation":
+                prev_end = end or prev_end
         latest = advs[-1]
-        latest_stop = next((x for x in reversed(advs) if x["action"] != "cancellation"), latest)
-        cancelled = latest["action"] == "cancellation"
-        win = latest_stop.get("event_window") or latest_stop.get("effective_window") or {}
-        end = parse_iso(win.get("end")) if win else None
-        if cancelled:
-            state, note = "cancelled", f"FAA cancellation/release advisory {latest['number']} issued {latest.get('issued_utc') or ''}".strip()
-        elif end and end < now:
-            state, note = "unconfirmed", "Scheduled end time has passed, but no FAA cancellation or release advisory was found. Treat as possibly still in effect."
-        else:
-            state, note = "active", "Listed in FAA advisories with no cancellation found."
-        out.append({**c, "state": state, "state_note": note, "latest": latest, "governing": latest_stop,
-                    "advisory_count": len(advs), "listed_now": True, "last_seen": iso(now),
-                    "first_seen": (prev_items.get(key) or {}).get("first_seen") or iso(now),
-                    "advisories": [{k: a.get(k) for k in ("number", "action", "type", "issued_utc", "url", "title")} for a in advs]})
-    # restrictions seen previously but not in current advisory list
-    cur_keys = {o["key"] for o in out}
-    for key, p in prev_items.items():
-        if key in cur_keys or p.get("state") == "cancelled":
-            continue
-        last_seen = parse_iso(p.get("last_seen"))
-        if adv_res.get("ok") and last_seen and (now - last_seen) < dt.timedelta(hours=NATIONAL_KEEP_HOURS):
-            q = dict(p)
-            q["listed_now"] = False
-            q["state"] = "unconfirmed"
-            q["state_note"] = ("This advisory is no longer listed in the FAA advisory pages checked. "
-                               "No cancellation was found, so it may still be in effect. Confirm with FAA.")
-            out.append(q)
+        governing = next((x for x in reversed(advs) if x["action"] != "cancellation"), latest)
+        win = governing.get("event_window") or governing.get("effective_window") or {}
+        end = parse_iso(win.get("end"))
+        any_listed = any(x.get("listed_now") for x in advs)
+        vanished = [x for x in advs if x.get("vanished")]
+        if latest["action"] == "cancellation":
+            state = "cancelled"
+            note = f"FAA advisory {latest.get('number')} cancels/releases this stop" + (f" (issued {latest['issued_utc']})." if latest.get("issued_utc") else ".")
         elif not adv_res.get("ok"):
-            q = dict(p)
-            q["state_note"] = "Carried over from the last successful check. FAA advisory source unavailable this run."
-            out.append(q)
+            state = (prev_items.get(key) or {}).get("state", "unconfirmed") if prev_items.get(key) else "unconfirmed"
+            note = "FAA advisory source unavailable this run. Showing the last known state; not re-verified."
+        elif vanished and not any_listed:
+            state = "unconfirmed"
+            note = ("No longer listed in the FAA advisory list for its date, and no cancellation was found. "
+                    "It may still be in effect. Confirm with FAA.")
+        elif end and end < now:
+            state = "unconfirmed"
+            note = ("Scheduled end time has passed, but no FAA cancellation or release advisory was found. "
+                    "Treat as possibly still in effect.")
+        else:
+            state = "active"
+            note = "In FAA advisories with no cancellation found."
+        if win.get("until_further_notice") and state == "active":
+            note += " Until further notice."
+        p = prev_items.get(key) or {}
+        out.append({**c, "state": state, "state_note": note, "latest": _slim(latest), "governing": _slim(governing),
+                    "advisory_count": len(advs), "listed_now": any_listed,
+                    "first_seen": p.get("first_seen") or iso(now), "last_seen": iso(now),
+                    "changed": bool(p) and (p.get("state") != state or (p.get("latest") or {}).get("number") != latest.get("number")),
+                    "is_new": not p,
+                    "advisories": [_slim(a, short=True) for a in advs]})
     order = {"national": 0, "airline": 1, "facility": 2, "airport": 3, "unknown": 4}
     st_order = {"active": 0, "unconfirmed": 1, "cancelled": 2}
-    out.sort(key=lambda o: (order.get(o["scope"], 9), st_order.get(o["state"], 9), o.get("latest", {}).get("issued_utc") or ""))
+    out.sort(key=lambda o: (order.get(o["scope"], 9), st_order.get(o["state"], 9), -(int(re.sub(r"\D", "", str(o["latest"].get("number") or 0)) or 0))))
     nat = [o for o in out if o["scope"] == "national"]
     if not adv_res.get("ok"):
-        status = "unverified"
-        headline = "National status unverified"
+        status, headline = "unverified", "National status unverified"
     elif any(o["state"] == "active" for o in nat):
-        status = "national_stop_active"
-        headline = "Nationwide ground stop listed by FAA"
+        status, headline = "national_stop_active", "Nationwide ground stop in effect"
     elif any(o["state"] == "unconfirmed" for o in nat):
-        status = "national_stop_unconfirmed"
-        headline = "Nationwide ground stop: end not confirmed"
+        status, headline = "national_stop_unconfirmed", "Nationwide ground stop: end not confirmed by FAA"
     else:
-        status = "none_found"
-        headline = "No nationwide ground stop found in FAA advisories"
-    return {"status": status, "headline": headline, "verified": bool(adv_res.get("ok")),
+        status, headline = "none_found", "No nationwide ground stop in today's FAA advisories"
+    return {"status": status, "headline": headline, "verified": bool(adv_res.get("ok")), "partial": bool(adv_res.get("partial")),
             "checked": adv_res.get("checked", []), "errors": adv_res.get("errors", []),
-            "advisories_scanned": len(adv_res.get("items", [])), "ground_stop_advisories": len(gs),
+            "advisories_in_lists": adv_res.get("list_count", 0), "ground_stop_advisories": len(gs),
             "latest_advisory": adv_res.get("latest"),
+            "related": [_slim(a) for a in sorted(related, key=lambda x: x.get("issued_utc") or "", reverse=True)[:6]],
             "restrictions": out}
+
+
+def _slim(a, short=False):
+    keys = ["number", "role", "action", "type", "title", "issued_utc", "url", "listed_now", "vanished", "scope"]
+    if not short:
+        keys += ["reason", "event_window", "effective_window", "ctl_element", "list_control", "destination",
+                 "facilities_included", "airlines", "flt_incl", "expect_update", "probability_of_extension",
+                 "signature", "send_time", "excerpt", "detail_missing"]
+    return {k: a.get(k) for k in keys if a.get(k) not in (None, "", [])}
 
 
 # ----------------------------------------------------- airport diffing
@@ -548,6 +618,48 @@ def diff_airports(cur, prev_air, now):
     return cur
 
 
+def enrich_with_events(air, events_body):
+    """nasstatus airport-events JSON carries ISO UTC times and advisory links for the same programs."""
+    try:
+        ev = json.loads(events_body)
+    except Exception as e:  # noqa: BLE001
+        return f"airport-events parse error: {e}"
+    by = {}
+    for e in ev if isinstance(ev, list) else []:
+        by[(e.get("airportId") or "").upper()] = e
+    mapping = {"ground_stops": "groundStop", "ground_delays": "groundDelay", "closures": "airportClosure"}
+    seen = set()
+    for lst, key in mapping.items():
+        for p in air.get(lst, []):
+            e = by.get(p["arpt"]) or {}
+            g = e.get(key)
+            if lst == "closures" and not g:
+                g = e.get("freeForm")
+            if not g:
+                continue
+            seen.add((lst, p["arpt"]))
+            p["start_utc"] = g.get("startTime")
+            p["end_utc"] = g.get("endTime") or g.get("programExpirationTime")
+            p["advisory_url"] = (g.get("advisoryUrl") or "").replace(" ", "%20") or None
+            p["probability_of_extension"] = g.get("probabilityOfExtension")
+            p["included_flights"] = g.get("includedFlights")
+            p["center"] = g.get("center")
+            p["source_timestamp"] = g.get("sourceTimeStamp") or g.get("updatedAt")
+            if e.get("airportLongName") and not p.get("name"):
+                p["name"] = e["airportLongName"]
+                p["name_source"] = "FAA airport-events"
+    extra = []
+    for code, e in by.items():
+        for lst, key in mapping.items():
+            if key != "airportClosure" and e.get(key) and (lst, code) not in seen:
+                g = e[key]
+                extra.append({"arpt": code, "kind": lst, "end_utc": g.get("endTime"), "reason": g.get("impactingCondition"),
+                              "advisory_url": (g.get("advisoryUrl") or "").replace(" ", "%20") or None,
+                              **airport_info(code)})
+    air["events_only"] = extra
+    return None
+
+
 # ------------------------------------------------------------- main
 def src_state(name, prev_src, ok, now, extra=None, error=None):
     p = prev_src or {}
@@ -581,6 +693,10 @@ def run(out_path, prev_path=None, fixtures=None):
             air_err = f"Parse error: {e}"
     else:
         air_err = r.get("error")
+    ev_err = None
+    if air is not None:
+        er = fixtures.get("airport_events") if fixtures and "airport_events" in fixtures else http_get(URL_EVENTS)
+        ev_err = enrich_with_events(air, er["body"]) if er.get("ok") else er.get("error")
     if air is not None:
         upd = parse_iso(air["update_time"])
         age = round((now - upd).total_seconds() / 60, 1) if upd else None
@@ -604,9 +720,10 @@ def run(out_path, prev_path=None, fixtures=None):
         adv = fixtures["advisories"]
     else:
         try:
-            adv = fetch_advisories(now)
+            adv = fetch_advisories(now, prev)
         except Exception as e:  # noqa: BLE001
             adv = {"ok": False, "items": [], "errors": [f"{type(e).__name__}: {e}"], "checked": []}
+    adv_cache = merge_advisory_cache(adv, prev, now)
     nat = build_national(adv, prev, now)
     sv = src_state("advisories", prev_sources.get("advisories"), bool(adv.get("ok")), now,
                    {"url": URL_ADB, "list_urls": adv.get("checked", []), "count": len(adv.get("items", [])),
@@ -640,14 +757,16 @@ def run(out_path, prev_path=None, fixtures=None):
     status = {
         "schema": SCHEMA, "generated_at": iso(now),
         "run": {"id": os.environ.get("GITHUB_RUN_ID"), "url": (f"{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}" if os.environ.get("GITHUB_RUN_ID") else None)},
-        "sources": {"airport_xml": sa, "advisories": sv, "news": sn},
+        "sources": {"airport_xml": sa, "advisories": sv, "news": sn,
+                    "airport_events": {"ok": ev_err is None and sa["ok"], "url": URL_EVENTS, "error": ev_err, "fetched_at": iso(now)}},
         "national": nat,
         "airports": air,
         "counts": counts,
         "news": news.get("items", []),
         "event_log": log,
+        "advisory_cache": adv_cache,
         "history": history,
-        "links": {"faa_nas": URL_NAS, "faa_adb": URL_ADB, "faa_adv_form": URL_ADV_FORM, "faa_airport_xml": URL_AIRPORT_XML},
+        "links": {"faa_events": URL_EVENTS, "faa_nas": URL_NAS, "faa_adb": URL_ADB, "faa_adv_form": URL_ADV_FORM, "faa_airport_xml": URL_AIRPORT_XML},
     }
     tmp = out_path + ".tmp"
     json.dump(status, open(tmp, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
