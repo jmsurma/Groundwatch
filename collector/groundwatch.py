@@ -67,7 +67,12 @@ def http_get(url, timeout=40, data=None, tries=2):
             req = urllib.request.Request(url, data=data, headers={"User-Agent": UA, "Accept": "*/*"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read()
-                return {"ok": True, "status": r.status, "body": body.decode("utf-8", "replace"),
+                cs = (re.search(r"charset=([\w-]+)", r.headers.get("content-type") or "") or [None, None])[1]
+                try:
+                    text = body.decode(cs or "utf-8")
+                except (UnicodeDecodeError, LookupError):
+                    text = body.decode("latin-1")
+                return {"ok": True, "status": r.status, "body": text,
                         "headers": dict(r.headers), "final_url": r.geturl()}
         except Exception as e:  # noqa: BLE001
             last = e
@@ -291,6 +296,7 @@ def parse_window(raw, ref):
 def parse_advisory_text(text, url=None, meta=None):
     """Parse a raw ATCSCC advisory body into structured fields."""
     meta = meta or {}
+    text = text.replace("\xa0", " ").replace("\ufffd", " ")
     lines = [ln.rstrip() for ln in text.replace("\r", "").split("\n")]
     lines = [ln for ln in lines if ln.strip()]
     head = next((ln.strip() for ln in lines if re.search(r"ADVZY", ln, re.I)), meta.get("title") or (lines[0].strip() if lines else ""))
@@ -527,6 +533,7 @@ def build_national(adv_res, prev, now):
                     "first_seen": p.get("first_seen") or iso(now), "last_seen": iso(now),
                     "changed": bool(p) and (p.get("state") != state or (p.get("latest") or {}).get("number") != latest.get("number")),
                     "is_new": not p,
+                    "hours_past_end": round((now - end).total_seconds() / 3600, 1) if end and end < now else None,
                     "advisories": [_slim(a, short=True) for a in advs]})
     order = {"national": 0, "airline": 1, "facility": 2, "airport": 3, "unknown": 4}
     st_order = {"active": 0, "unconfirmed": 1, "cancelled": 2}

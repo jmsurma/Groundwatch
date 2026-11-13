@@ -56,7 +56,7 @@ def detail_text(page):
     s = page[i:] if i >= 0 else page
     s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
     s = re.sub(r"</(p|tr|div|th|td)>", "\n", s, flags=re.I)
-    s = html.unescape(re.sub(r"<[^>]+>", "", s)).replace("\xa0", " ")
+    s = html.unescape(re.sub(r"<[^>]+>", "", s)).replace("\xa0", " ").replace("\ufffd", " ")
     cut = s.find("FAA.gov Home")
     if cut > 0:
         s = s[:cut]
@@ -70,6 +70,17 @@ def detail_text(page):
         else:
             out.append(ln)
     return "\n".join(out)
+
+
+def _scope_from_row(row):
+    first = (row.get("control") or "").split("/")[0].strip().upper()
+    if NATIONAL_TITLE.search(row.get("brief") or "") or first == "ALL":
+        return "national"
+    if re.fullmatch(r"Z[A-Z]{2}", first):
+        return "facility"
+    if first and first not in ("DCC", "ATCSCC"):
+        return "airport"
+    return "unknown"
 
 
 def _is_relevant(title, control=""):
@@ -177,7 +188,8 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
                         a = {"number": row["number"], "title": f"ATCSCC ADVZY {row['number']} {row['control']} {row['date']} {row['brief']}",
                              "type": row["brief"].upper(), "url": url, "detail_missing": True,
                              "is_ground_stop": bool(re.search(r"GROUND\s*STOP|\bGS\b", row["brief"], re.I)),
-                             "scope": "national" if NATIONAL_TITLE.search(row["brief"]) else "unknown",
+                             "scope": _scope_from_row(row),
+                             "ctl_element": (row["control"].split("/")[0].strip() or None) if row["control"].split("/")[0].strip() not in ("DCC", "ALL", "ATCSCC") else None,
                              "action": "cancellation" if re.search(r"\bCNX\b|CANCEL", row["brief"], re.I) else "issued"}
                 a.update(list_control=row["control"], list_brief=row["brief"], send_time=row["send_time"], adv_date=row["adv_date"])
                 day_items.append(a)
