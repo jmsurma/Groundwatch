@@ -1,0 +1,17 @@
+name: discover
+on:
+  push:
+    paths: ["collector/discover.py", ".github/workflows/discover.yml"]
+permissions:
+  contents: write
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 collector/discover.py /tmp/out
+      - name: push raw responses to discovery branch
+        run: |
+          cd /tmp/out && git init -q -b discovery && git add -A
+          git -c user.name=groundwatch-bot -c user.email=bot@users.noreply.github.com commit -qm "discovery $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" discovery
