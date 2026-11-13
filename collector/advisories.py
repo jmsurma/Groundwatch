@@ -5,6 +5,7 @@ List:   GET https://www.fly.faa.gov/adv/adv_list?whichAdvisories=ATCSCC&advisory
 Detail: GET https://www.fly.faa.gov/adv/adv_otherdis?adv_date=MMDDYYYY&advn=N   (plain-text fields inside HTML)
 """
 import datetime as dt
+import time
 import html
 import re
 import urllib.parse
@@ -97,7 +98,7 @@ def _fetch_detail(url, http_get, parse_advisory_text, meta):
     return parse_advisory_text(txt, url=url, meta=meta), None
 
 
-def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, max_n=400):
+def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, max_n=400, floor=0):
     """Fallback when the list page is empty/broken: walk advisory numbers via the detail pages.
     Detail pages are cached (advisories never change once sent), so later runs only probe new numbers."""
     from concurrent.futures import ThreadPoolExecutor
@@ -134,7 +135,16 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
                          "issued_utc": a.get("issued_utc"), "adv_date": mmddyyyy, "irrelevant": True}
                 found.append(a); misses = hard_fail = 0
             elif err == "not an advisory page":
-                misses += 1
+                a2, err2 = _fetch_detail(detail_url(mmddyyyy, k), http_get, parse_advisory_text, {"number": str(k).zfill(3)})
+                if a2:
+                    a2["adv_date"] = mmddyyyy
+                    found.append(a2); misses = hard_fail = 0
+                    continue
+                if k <= floor:
+                    hard_fail += 1   # an advisory we know exists failed to load: transient
+                    errors.append(f"Advisory {k} ({mmddyyyy}) known to exist but did not load")
+                else:
+                    misses += 1
             else:
                 hard_fail += 1
                 errors.append(f"Advisory {k} ({mmddyyyy}): {err}")
@@ -148,7 +158,7 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
     return found, incomplete
 
 
-def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
+def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=None, sleep_ok=True):
     """Today's + yesterday's (UTC) ATCSCC advisories.
 
     1. List page (fast). FAA's list sometimes answers "NO ADVISORIES MATCH" even while advisories exist
@@ -157,22 +167,37 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
     cache: {url: advisory} from previous runs.
     """
     cache = cache or {}
+    floors = dict(floors or {})
+    for u in cache:   # highest advisory number already seen per date is a floor for completeness
+        m = re.search(r"adv_date=(\d{8})&advn=(\d+)", u)
+        if m:
+            floors[m.group(1)] = max(floors.get(m.group(1), 0), int(m.group(2)))
     checked, errors, items, latest = [], [], [], None
     today_ok = False
     stubs = []
     for idx, day in enumerate((now, now - dt.timedelta(days=1))):
         u = list_url(day)
-        r = http_get(u, timeout=45)
-        entry = {"url": u, "day": day.strftime("%Y-%m-%d"), "ok": False, "method": "list"}
+        entry = {"url": u, "day": day.strftime("%Y-%m-%d"), "ok": False, "method": "list", "attempts": 0}
         rows = []
-        if r.get("ok"):
-            cap, rows, no_match, valid = parse_list(r["body"])
-            entry.update(caption=cap, rows=len(rows), no_match=no_match, valid=valid)
-        else:
-            entry["error"] = r.get("error")
+        for attempt in range(3):   # FAA's list intermittently answers "NO ADVISORIES MATCH"
+            entry["attempts"] = attempt + 1
+            r = http_get(u, timeout=45)
+            if r.get("ok"):
+                cap, rows, no_match, valid = parse_list(r["body"])
+                entry.update(caption=cap, rows=len(rows), no_match=no_match, valid=valid, error=None)
+                if rows:
+                    break
+            else:
+                entry["error"] = r.get("error")
+            time.sleep(4 if sleep_ok else 0)
+        floor = floors.get(day.strftime("%m%d%Y"), 0)
+        entry["expected_min_number"] = floor
         day_items = []
         if rows:
-            entry["ok"] = True
+            entry["max_number"] = max(int(r_["advn"]) for r_ in rows if str(r_["advn"]).isdigit())
+            entry["ok"] = entry["max_number"] >= floor
+            if not entry["ok"]:
+                errors.append(f"List {entry['day']} ends at {entry['max_number']} but advisory {floor} was already seen; list looks truncated")
             for row in rows:
                 if idx == 0 and latest is None:
                     latest = {"number": row["number"], "brief": row["brief"], "send_time": row["send_time"], "url": row["url"]}
@@ -196,8 +221,12 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None):
         else:
             entry["fallback"] = "detail-walk"
             entry["method"] = "detail-walk"
-            walked, incomplete = _probe_day(day, http_get, parse_advisory_text, cache, errors)
+            walked, incomplete = _probe_day(day, http_get, parse_advisory_text, cache, errors, floor=floor)
             entry["walked"] = len(walked)
+            entry["max_number"] = max([int(re.sub(r"\D", "", str(a.get("number") or 0)) or 0) for a in walked] or [0])
+            if walked and entry["max_number"] < floor:
+                incomplete = True
+                errors.append(f"Advisories {entry['day']}: number walk reached {entry['max_number']}, expected at least {floor}")
             entry["incomplete"] = incomplete
             stubs += [a for a in walked if a.get("irrelevant")]
             if walked and not incomplete:

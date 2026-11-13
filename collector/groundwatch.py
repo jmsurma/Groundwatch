@@ -388,7 +388,18 @@ def fetch_advisories(now, prev=None):
     """Return {"ok": bool, "items": [...], "errors": [...], "checked": [...]}"""
     from advisories import fetch_advisory_list  # kept separate so it can track FAA format changes
     cache = {a["url"]: a for a in ((prev or {}).get("advisory_cache") or []) if a.get("url")}
-    return fetch_advisory_list(now, http_get, parse_advisory_text, cache)
+    floors = {}
+    # Other FAA sources reference advisory numbers; use them as completeness floors.
+    r = http_get("https://nasstatus.faa.gov/api/operations-plan", timeout=20)
+    links = []
+    if r.get("ok"):
+        links.append(r["body"])
+    r = http_get(URL_EVENTS, timeout=20)
+    if r.get("ok"):
+        links.append(r["body"])
+    for m in re.finditer(r"advn=(\d+)&adv_date=(\d{8})", " ".join(links)):
+        floors[m.group(2)] = max(floors.get(m.group(2), 0), int(m.group(1)))
+    return fetch_advisory_list(now, http_get, parse_advisory_text, cache, floors)
 
 
 ADV_CACHE_HOURS = 36
@@ -398,7 +409,11 @@ def merge_advisory_cache(adv, prev, now):
     """Advisories are immutable. Keep ones seen in the last 36h so a UTC date rollover or a
     list glitch never silently drops a stop. Flags advisories that vanished from a list we did fetch."""
     cur = {a["url"]: a for a in adv.get("items", []) if a.get("url")}
-    ok_days = {c["day"] for c in adv.get("checked", []) if c.get("ok")}
+    coverage = {}
+    for c in adv.get("checked", []):
+        if c.get("ok") and not c.get("incomplete"):
+            d = c["day"]
+            coverage[d[5:7] + d[8:10] + d[0:4]] = int(c.get("max_number") or 0)
     merged = list(adv.get("items", []))
     for a in (prev or {}).get("advisory_cache") or []:
         u = a.get("url")
@@ -412,8 +427,11 @@ def merge_advisory_cache(adv, prev, now):
         b = dict(a)
         b["listed_now"] = False
         d = a.get("adv_date") or ""
-        day = f"{d[4:8]}-{d[0:2]}-{d[2:4]}" if len(d) == 8 else None
-        b["vanished"] = bool(day and day in ok_days)
+        try:
+            num = int(re.sub(r"\D", "", str(a.get("number") or "")) or 0)
+        except ValueError:
+            num = 0
+        b["vanished"] = bool(d in coverage and num and num <= coverage[d])
         merged.append(b)
     adv["items"] = merged
     cache = []
