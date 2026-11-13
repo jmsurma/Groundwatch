@@ -1,0 +1,51 @@
+[
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=ATCSCC&advisoryCategory=All&date=2026-11-13&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "status": 200,
+  "len": 42701,
+  "final": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=ATCSCC&advisoryCategory=All&date=2026-11-13&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "file": "list_ATCSCC_20261113.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=Canadian&advisoryCategory=All&date=2026-11-13&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "status": 200,
+  "len": 12739,
+  "final": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=Canadian&advisoryCategory=All&date=2026-11-13&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "file": "list_Canadian_20261113.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=ATCSCC&advisoryCategory=All&date=2026-11-12&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "status": 200,
+  "len": 12737,
+  "final": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=ATCSCC&advisoryCategory=All&date=2026-11-12&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "file": "list_ATCSCC_20261112.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=Canadian&advisoryCategory=All&date=2026-11-12&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "status": 200,
+  "len": 12739,
+  "final": "https://www.fly.faa.gov/adv/adv_list?whichAdvisories=Canadian&advisoryCategory=All&date=2026-11-12&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on",
+  "file": "list_Canadian_20261112.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=122",
+  "status": 200,
+  "len": 9874,
+  "final": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=122",
+  "file": "detail_0.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=121",
+  "status": 200,
+  "len": 9130,
+  "final": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=121",
+  "file": "detail_1.html"
+ },
+ {
+  "url": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=120",
+  "status": 200,
+  "len": 9376,
+  "final": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=120",
+  "file": "detail_2.html"
+ }
+]
