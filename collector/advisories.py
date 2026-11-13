@@ -11,6 +11,11 @@ import re
 import urllib.parse
 
 BASE = "https://www.fly.faa.gov/adv/"
+DEADLINE = [None]   # monotonic time after which walks stop (set by fetch_advisory_list)
+
+
+def _out_of_time():
+    return DEADLINE[0] is not None and time.monotonic() > DEADLINE[0]
 CHECKBOXES = {"airflow": "true", "_airflow": "on", "ctop": "true", "_ctop": "on", "gStop": "true", "_gStop": "on",
               "gDelay": "true", "_gDelay": "on", "route": "true", "_route": "on", "other": "true", "_other": "on"}
 # titles worth fetching in full: ground stops, their cancellations/extensions, and nationwide/systemwide items
@@ -97,7 +102,9 @@ def _is_relevant(title, control=""):
 
 
 def _fetch_detail(url, http_get, parse_advisory_text, meta):
-    r = http_get(url, timeout=40, tries=2)
+    if _out_of_time():
+        return None, "time budget exhausted"
+    r = http_get(url, timeout=15, tries=1)
     if not r.get("ok"):
         return None, r.get("error")
     txt = detail_text(r["body"])
@@ -122,6 +129,10 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
     hard_fail = 0
     incomplete = False
     while n <= max_n:
+        if _out_of_time():
+            incomplete = True
+            errors.append(f"Advisories {mmddyyyy}: stopped at {n - 1}, time budget exhausted")
+            break
         batch = list(range(n, n + 8))
         todo = [k for k in batch if k not in known]
         res = {}
@@ -142,7 +153,7 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
                     a = {"url": a.get("url"), "number": a.get("number"), "title": a.get("title"), "type": a.get("type"),
                          "issued_utc": a.get("issued_utc"), "adv_date": mmddyyyy, "irrelevant": True}
                 found.append(a); misses = hard_fail = 0
-            elif err == "not an advisory page":
+            elif err == "not an advisory page" and not _out_of_time():
                 a2, err2 = _fetch_detail(detail_url(mmddyyyy, k), http_get, parse_advisory_text, {"number": str(k).zfill(3)})
                 if a2:
                     a2["adv_date"] = mmddyyyy
@@ -166,7 +177,7 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
     return found, incomplete
 
 
-def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=None, sleep_ok=True):
+def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=None, sleep_ok=True, budget_s=330):
     """Today's + yesterday's (UTC) ATCSCC advisories.
 
     1. List page (fast). FAA's list sometimes answers "NO ADVISORIES MATCH" even while advisories exist
@@ -175,6 +186,7 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
     cache: {url: advisory} from previous runs.
     """
     cache = cache or {}
+    DEADLINE[0] = time.monotonic() + budget_s
     floors = dict(floors or {})
     for u in cache:   # highest advisory number already seen per date is a floor for completeness
         m = re.search(r"adv_date=(\d{8})&advn=(\d+)", u)
@@ -189,7 +201,7 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
         rows = []
         for attempt in range(3):   # FAA's list intermittently answers "NO ADVISORIES MATCH"
             entry["attempts"] = attempt + 1
-            r = http_get(u, timeout=45)
+            r = http_get(u, timeout=30, tries=1)
             if r.get("ok"):
                 cap, rows, no_match, valid = parse_list(r["body"])
                 entry.update(caption=cap, rows=len(rows), no_match=no_match, valid=valid, error=None)
