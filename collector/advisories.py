@@ -73,6 +73,14 @@ def detail_text(page):
     return "\n".join(out)
 
 
+def _send_time_iso(st):
+    """List SEND TIME '11/13/26 22:46' is UTC (matches advisory SIGNATURE)."""
+    try:
+        return dt.datetime.strptime(st.strip(), "%m/%d/%y %H:%M").strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        return None
+
+
 def _scope_from_row(row):
     first = (row.get("control") or "").split("/")[0].strip().upper()
     if NATIONAL_TITLE.search(row.get("brief") or "") or first == "ALL":
@@ -217,6 +225,8 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
                              "ctl_element": (row["control"].split("/")[0].strip() or None) if row["control"].split("/")[0].strip() not in ("DCC", "ALL", "ATCSCC") else None,
                              "action": "cancellation" if re.search(r"\bCNX\b|CANCEL", row["brief"], re.I) else "issued"}
                 a.update(list_control=row["control"], list_brief=row["brief"], send_time=row["send_time"], adv_date=row["adv_date"])
+                if not a.get("issued_utc"):
+                    a["issued_utc"] = _send_time_iso(row["send_time"])
                 day_items.append(a)
         else:
             entry["fallback"] = "detail-walk"
