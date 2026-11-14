@@ -155,5 +155,18 @@ cache = {"https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=5": {"
 res = av.fetch_advisory_list(T0, fake2, gw.parse_advisory_text, cache, sleep_ok=False)
 a5 = [a for a in res["items"] if str(a.get("number")).lstrip("0") == "5"]
 check("13 text-less cached advisory gets re-read", a5 and a5[0].get("reason") == "COMMUNICATIONS FAILURE" and not a5[0].get("detail_missing"), a5)
+# 14 just after 00:00Z: new day empty + yesterday list OK -> verified; at 10:00Z -> unverified
+def fake4(url, timeout=40, data=None, tries=2):
+    if "adv_list" in url and "2026-11-14" in url:
+        return {"ok": True, "body": "<th class=caption>ATCSCC ADVISORIES FOR 2026-11-14</th> NO ADVISORIES MATCH"}
+    if "adv_list" in url:
+        return {"ok": True, "body": '<th class=caption>ATCSCC ADVISORIES FOR 2026-11-13</th><tr><td><a href="/adv/adv_otherdis?adv_date=11132026&advn=120">120</a></td><td>DCC</td><td>11/13/26</td><td>NATIONWIDE GROUND STOP</td><td>11/13/26 22:46</td></tr>'}
+    if "advn=120" in url and "11132026" in url:
+        return fake2(url.replace("advn=120", "advn=5"))
+    return {"ok": True, "body": "<title>Error</title><div class=\"mainArea\">Invalid/Missing Input Data</div>"}
+res = av.fetch_advisory_list(dt.datetime(2026, 11, 14, 0, 10, tzinfo=UTC), fake4, gw.parse_advisory_text, {}, sleep_ok=False)
+check("14 new UTC day, nothing yet, yesterday verified -> ok", res["ok"] and any(a.get("is_ground_stop") for a in res["items"]), res["checked"])
+res = av.fetch_advisory_list(dt.datetime(2026, 11, 14, 10, 0, tzinfo=UTC), fake4, gw.parse_advisory_text, {}, sleep_ok=False)
+check("14 empty day at 10:00Z -> unverified", res["ok"] is False)
 print("\n%d failures" % len(FAILS))
 sys.exit(1 if FAILS else 0)

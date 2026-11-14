@@ -56,6 +56,9 @@ button { font: inherit; cursor: pointer; }
 .btn:hover { border-color: #3a5f93; }
 .btn[disabled] { opacity: .6; cursor: progress; }
 
+.live { font-size: 13px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; width: 100%; justify-content: flex-end; }
+.live a { color: var(--orange); font-weight: 600; }
+@media (max-width: 720px) { .live { justify-content: flex-start; } }
 .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); padding: 0 0 10px; }
 .meta b { color: var(--text); font-weight: 500; }
 
@@ -202,6 +205,10 @@ details[open] > summary { margin-bottom: 8px; }
         <span class="count" id="countdown" aria-live="off"></span>
         <button class="btn" id="refreshBtn" type="button">Refresh now</button>
       </div>
+      <div class="live" aria-label="Check FAA sources live">Check FAA live:
+        <a id="liveAdv" href="https://www.fly.faa.gov/adv/advAdvisoryForm" target="_blank" rel="noopener">Today's advisories</a>
+        <a href="https://nasstatus.faa.gov/" target="_blank" rel="noopener">NAS Status</a>
+      </div>
     </div>
     <div class="meta" id="meta" aria-live="polite"></div>
   </div>
@@ -324,7 +331,7 @@ details[open] > summary { margin-bottom: 8px; }
       if (rel) h.push("Published here <b class='mono'>" + z(rel) + "</b>");
     }
     if (state.retrievedAt) h.push("Retrieved by this page <b class='mono'>" + z(state.retrievedAt) + "</b>");
-    if (state.sameAsBefore) h.push("<span>No newer report yet</span>");
+    if (state.sameAsBefore) h.push("<span style='color:var(--amber)'>No newer report yet. Use “Check FAA live” for up-to-the-minute status.</span>");
     $("meta").innerHTML = h.map(function (x) { return "<span>" + x + "</span>"; }).join("");
   }
 
@@ -519,6 +526,11 @@ details[open] > summary { margin-bottom: 8px; }
   $("q").addEventListener("input", function (e) { state.q = e.target.value; if (state.data) renderAirports(state.data); });
   $("refreshBtn").addEventListener("click", function () { load(true); });
   document.addEventListener("visibilitychange", function () { if (!document.hidden && state.data && minsOld(state.retrievedAt) > 15) load(false); });
+  (function () {
+    var d = new Date().toISOString().slice(0, 10);
+    var q = "whichAdvisories=ATCSCC&advisoryCategory=All&date=" + d + "&airflow=true&_airflow=on&ctop=true&_ctop=on&gStop=true&_gStop=on&gDelay=true&_gDelay=on&route=true&_route=on&other=true&_other=on";
+    $("liveAdv").href = "https://www.fly.faa.gov/adv/adv_list?" + q;
+  })();
   setInterval(tick, 1000); tick();
   load(false);
 })();

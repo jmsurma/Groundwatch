@@ -11,7 +11,8 @@ import re
 import urllib.parse
 
 BASE = "https://www.fly.faa.gov/adv/"
-DEADLINE = [None]   # monotonic time after which walks stop (set by fetch_advisory_list)
+DEADLINE = [None]
+_LAST_BAD = [""]   # monotonic time after which walks stop (set by fetch_advisory_list)
 
 
 def _out_of_time():
@@ -109,6 +110,8 @@ def _fetch_detail(url, http_get, parse_advisory_text, meta):
         return None, r.get("error")
     txt = detail_text(r["body"])
     if not re.search(r"ADVZY\s+\d+", txt):
+        title = re.search(r"<title>([^<]*)</title>", r["body"], re.I)
+        _LAST_BAD[0] = (title.group(1).strip() if title else "") + " | " + re.sub(r"\s+", " ", txt)[:120]
         return None, "not an advisory page"
     return parse_advisory_text(txt, url=url, meta=meta), None
 
@@ -226,10 +229,16 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
                 url = row["url"]
                 a = dict(cache[url]) if url in cache and cache[url].get("title") and not cache[url].get("detail_missing") else None
                 if a is None:
-                    a, err = _fetch_detail(url, http_get, parse_advisory_text,
-                                           {"title": row["brief"], "number": row["number"], "control": row["control"]})
+                    tries = 3 if re.search(r"GROUND\s*STOP|\bGS\b|NATION", row["brief"], re.I) else 1
+                    for t_ in range(tries):
+                        a, err = _fetch_detail(url, http_get, parse_advisory_text,
+                                               {"title": row["brief"], "number": row["number"], "control": row["control"]})
+                        if a is not None or _out_of_time():
+                            break
+                        if sleep_ok:
+                            time.sleep(2 + 2 * t_)
                     if a is None:
-                        errors.append(f"Advisory {row['number']} detail: {err}")
+                        errors.append(f"Advisory {row['number']} detail: {err}" + (f" [FAA returned: {_LAST_BAD[0]}]" if err == "not an advisory page" else ""))
                         a = {"number": row["number"], "title": f"ATCSCC ADVZY {row['number']} {row['control']} {row['date']} {row['brief']}",
                              "type": row["brief"].upper(), "url": url, "detail_missing": True,
                              "is_ground_stop": bool(re.search(r"GROUND\s*STOP|\bGS\b", row["brief"], re.I)),
@@ -265,10 +274,19 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
                 errors.append(f"Advisories for {entry['day']}: list page returned no rows and no advisories could be read by number")
         if idx == 0:
             today_ok = entry["ok"]
+            # Just after 00:00Z a new day legitimately has no advisories yet. Accept only if the
+            # list page itself answered validly for the new date, the number walk found nothing
+            # (not blocked by errors), and yesterday verifies below.
+            entry["new_day_empty"] = (not entry["ok"] and now.hour < 2 and entry.get("valid") and entry.get("no_match")
+                                      and not entry.get("incomplete") and not entry.get("walked"))
         for a in day_items:
             a["listed_now"] = True
         items += day_items
         checked.append(entry)
+    if not today_ok and checked and checked[0].get("new_day_empty") and len(checked) > 1 and checked[1]["ok"]:
+        today_ok = True
+        checked[0]["note"] = "No advisories published yet for this UTC day; verified against the previous day's list."
+        errors = [e for e in errors if not e.startswith(f"Advisories for {checked[0]['day']}")]
     return {"ok": today_ok, "partial": not all(c["ok"] for c in checked), "items": items, "errors": errors,
             "checked": checked, "latest": latest, "list_count": sum(c.get("rows", 0) or c.get("walked", 0) for c in checked),
             "stubs": stubs}
