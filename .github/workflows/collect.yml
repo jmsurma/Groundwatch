@@ -4,17 +4,13 @@ name: collect
 # the next one (workflow_dispatch with wait=1), which sleeps until the next :04/:19/:34/:49 slot.
 # The cron below stays as a backup that restarts the chain if it ever breaks. The concurrency
 # group keeps at most one running + one pending run, so chains cannot multiply.
+# PAUSED 2026-11-14 at the owner's request: no schedule, no self-chaining.
+# To resume, restore the schedule/workflow_dispatch triggers and the "Queue the next run" step
+# from the previous commit.
 on:
-  schedule:
-    - cron: "4,19,34,49 * * * *"
   push:
     branches: [main]
-    paths: ["collector/**", "site/**", "relay/**", ".github/workflows/collect.yml"]
-  workflow_dispatch:
-    inputs:
-      wait:
-        description: "Sleep until the next 15-minute slot before collecting"
-        default: "0"
+    paths: ["collector/**"]
 permissions:
   contents: write
   actions: write
@@ -27,7 +23,7 @@ jobs:
     timeout-minutes: 28
     steps:
       - name: Wait for next 15-minute slot
-        if: github.event_name == 'workflow_dispatch' && inputs.wait == '1'
+        if: false
         run: |
           python3 - <<'PY'
           import time, datetime as dt
@@ -66,8 +62,3 @@ jobs:
           git add status.json
           git -c user.name=groundwatch-bot -c user.email=groundwatch-bot@users.noreply.github.com commit -qm "status $(date -u +%FT%TZ)"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
-      - name: Queue the next run
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run collect.yml --repo "${{ github.repository }}" --ref main -f wait=1
