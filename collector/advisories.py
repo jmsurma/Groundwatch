@@ -98,6 +98,18 @@ def _scope_from_row(row):
     return "unknown"
 
 
+def long_detail_url(row):
+    """Long-form link used by nasstatus.faa.gov (adv_otherdis.jsp with facId/title); FAA sometimes
+    answers 'NO Advisory.' on the short form while the long form works."""
+    d = row.get("adv_date") or ""
+    title_date = f"{d[0:2]}/{d[2:4]}/{d[4:8]}" if len(d) == 8 else row.get("date", "")
+    fac = (row.get("control") or "DCC").replace(" ", "")
+    title = f"ATCSCC ADVZY {str(row['number']).zfill(3)} {fac} {title_date} {row.get('brief', '')}".strip()
+    q = urllib.parse.urlencode({"advn": int(row["advn"]), "adv_date": d, "facId": fac.split("/")[0] if fac != "DCC" else "ATCSCC",
+                                "title": title, "titleDate": title_date}, quote_via=urllib.parse.quote)
+    return BASE + "adv_otherdis.jsp?" + q
+
+
 def _is_relevant(title, control=""):
     return bool(RELEVANT.search(title or "") or NATIONAL_TITLE.search(control or ""))
 
@@ -231,8 +243,10 @@ def fetch_advisory_list(now, http_get, parse_advisory_text, cache=None, floors=N
                 if a is None:
                     tries = 3 if re.search(r"GROUND\s*STOP|\bGS\b|NATION", row["brief"], re.I) else 1
                     for t_ in range(tries):
-                        a, err = _fetch_detail(url, http_get, parse_advisory_text,
+                        a, err = _fetch_detail(url if t_ % 2 == 0 else long_detail_url(row), http_get, parse_advisory_text,
                                                {"title": row["brief"], "number": row["number"], "control": row["control"]})
+                        if a is not None:
+                            a["url"] = url
                         if a is not None or _out_of_time():
                             break
                         if sleep_ok:
