@@ -378,10 +378,11 @@ details[open] > summary { margin-bottom: 8px; }
     if (primary) {
       var g = primary.governing || {}, l = primary.latest || {};
       h += '<dl class="facts">';
+      if (n.status === "unverified") h += fact("Last confirmed state", ({ active: "In effect", unconfirmed: "End not confirmed", cancelled: "Cancelled by FAA" }[primary.state] || primary.state) + "<small>As of FAA check at " + z(pd((d.sources.advisories || {}).last_success_at)) + "; not re-verified since</small>");
       h += fact("Scope", "Nationwide (all airports)" + (g.destination ? "<small>Destination: " + esc(g.destination) + (g.facilities_included ? " · Facilities: " + esc(g.facilities_included) : "") + "</small>" : ""));
       h += fact("Latest advisory", '<span class="mono">ADVZY ' + esc(l.number) + "</span> " + esc(l.type || "") + "<small>" + link(l.url, "Open FAA advisory") + "</small>");
       h += fact("Issued", when(l.issued_utc));
-      h += fact("Stated reason", esc(g.reason || "Not stated in advisory") + (g.detail_missing ? "<small>Advisory text not yet retrieved</small>" : ""));
+      h += fact("Stated reason", g.reason ? esc(g.reason) : g.detail_missing ? "Not retrieved yet<small>FAA did not return the advisory text; open the advisory link</small>" : "Not stated in advisory");
       h += fact("Event window", windowText(g.event_window));
       h += fact("Effective time", windowText(g.effective_window));
       if (g.expect_update) h += fact("FAA expects update", '<span class="mono">' + esc(g.expect_update) + "</span>");
