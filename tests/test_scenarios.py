@@ -150,5 +150,10 @@ prev = run({"airport_xml": xml(T0), "advisories": advres([NAT2])})
 partial = advres([]); partial["checked"] = [{"day": "2026-11-13", "ok": True, "rows": 0, "max_number": 11}, {"day": "2026-11-12", "ok": True, "max_number": 160}]
 s = run({"airport_xml": xml(T0), "advisories": partial}, prev=prev, now=T0 + dt.timedelta(minutes=15))
 check("12 advisory beyond verified coverage is not 'vanished'", s["national"]["status"] == "national_stop_active", s["national"]["status"])
+# 13 cached advisory without text is re-read during a number walk
+cache = {"https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=5": {"url": "https://www.fly.faa.gov/adv/adv_otherdis?adv_date=11132026&advn=5", "number": "005", "title": "x", "type": "NATIONWIDE GROUND STOP", "detail_missing": True, "is_ground_stop": True, "scope": "national"}}
+res = av.fetch_advisory_list(T0, fake2, gw.parse_advisory_text, cache, sleep_ok=False)
+a5 = [a for a in res["items"] if str(a.get("number")).lstrip("0") == "5"]
+check("13 text-less cached advisory gets re-read", a5 and a5[0].get("reason") == "COMMUNICATIONS FAILURE" and not a5[0].get("detail_missing"), a5)
 print("\n%d failures" % len(FAILS))
 sys.exit(1 if FAILS else 0)

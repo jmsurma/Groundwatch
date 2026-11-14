@@ -241,7 +241,7 @@ details[open] > summary { margin-bottom: 8px; }
 (function () {
   "use strict";
   var REFRESH_MS = 15 * 60 * 1000;
-  var STALE_MIN = 25, VERY_STALE_MIN = 60;
+  var STALE_MIN = 80, VERY_STALE_MIN = 140; // collector: every 15 min; this page receives a report hourly
   var state = { data: null, retrievedAt: null, lastError: null, tab: "ground_stops", q: "", nextAt: Date.now() + REFRESH_MS, loading: false };
   var store = { get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
                 set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -334,7 +334,7 @@ details[open] > summary { margin-bottom: 8px; }
     if (d) {
       var age = minsOld(pd(d.generated_at));
       if (age > VERY_STALE_MIN) a.push('<div class="notice bad" role="alert"><strong>Stale data.</strong> The latest report is ' + Math.round(age) + " minutes old. The server collector or the publishing step may be delayed. Check FAA sources directly before relying on this page.</div>");
-      else if (age > STALE_MIN) a.push('<div class="notice warn" role="status"><strong>Data is ' + Math.round(age) + " minutes old.</strong> Updates normally arrive every 15 minutes.</div>");
+      else if (age > STALE_MIN) a.push('<div class="notice warn" role="status"><strong>Data is ' + Math.round(age) + " minutes old.</strong> This page normally receives a new report every hour.</div>");
       var ax = d.sources.airport_xml || {};
       if (!ax.ok) a.push('<div class="notice warn" role="status"><strong>FAA airport feed failed</strong> at ' + z(pd(ax.fetched_at)) + " (" + esc(ax.error || "unknown error") + "). Airport programs below are the last good report, from " + z(pd(ax.last_success_at)) + ".</div>");
       else if (ax.stale) a.push('<div class="notice warn" role="status"><strong>FAA airport feed looks stale.</strong> Its own timestamp is ' + esc(ax.source_age_min) + " minutes older than when it was fetched.</div>");
@@ -501,7 +501,7 @@ details[open] > summary { margin-bottom: 8px; }
       box("FAA ATCSCC advisories", s.advisories, "<div>" + (d.national.checked || []).map(function (c) { return esc(c.day) + ": " + (c.ok ? (c.rows ? c.rows + " listed" : (c.walked || 0) + " read by number") : "not verified"); }).join(" · ") + "</div>", L.faa_adv_form) +
       box("FAA airport events (times, links)", s.airport_events, "", L.faa_events) +
       box("News corroboration", s.news, "<div>" + (s.news.count || 0) + " recent items</div>", null) +
-      "</div><p style='margin:0'>Groundwatch collects FAA data server-side every 15 minutes. Times are UTC unless marked ET (America/New_York). Not an official FAA product; for operational decisions use " + link("https://www.fly.faa.gov/adv/advAdvisoryForm", "FAA advisories") + " and " + link("https://nasstatus.faa.gov/", "nasstatus.faa.gov") + ". " + (d.run && d.run.url ? link(d.run.url, "Collector run log") : "") + "</p>";
+      "</div><p style='margin:0'>Groundwatch collects FAA data server-side every 15 minutes; this page receives the latest report once an hour, so check the times above. Times are UTC unless marked ET (America/New_York). Not an official FAA product; for operational decisions use " + link("https://www.fly.faa.gov/adv/advAdvisoryForm", "FAA advisories") + " and " + link("https://nasstatus.faa.gov/", "nasstatus.faa.gov") + ". " + (d.run && d.run.url ? link(d.run.url, "Collector run log") : "") + "</p>";
   }
 
   // ---------- events

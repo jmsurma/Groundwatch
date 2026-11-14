@@ -121,7 +121,7 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
     found, n, misses = [], 1, 0
     known = {}
     for u, a in cache.items():
-        if f"adv_date={mmddyyyy}&" in u:
+        if f"adv_date={mmddyyyy}&" in u and not a.get("detail_missing"):
             try:
                 known[int(re.search(r"advn=(\d+)", u).group(1))] = a
             except Exception:
@@ -137,7 +137,7 @@ def _probe_day(day, http_get, parse_advisory_text, cache, errors, max_misses=3, 
         todo = [k for k in batch if k not in known]
         res = {}
         if todo:
-            with ThreadPoolExecutor(max_workers=6) as ex:
+            with ThreadPoolExecutor(max_workers=3) as ex:
                 futs = {k: ex.submit(_fetch_detail, detail_url(mmddyyyy, k), http_get, parse_advisory_text, {"number": str(k).zfill(3)}) for k in todo}
                 for k, f in futs.items():
                     res[k] = f.result()
