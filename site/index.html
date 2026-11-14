@@ -248,7 +248,7 @@ details[open] > summary { margin-bottom: 8px; }
 (function () {
   "use strict";
   var REFRESH_MS = 15 * 60 * 1000;
-  var STALE_MIN = 80, VERY_STALE_MIN = 140; // collector: every 15 min; this page receives a report hourly
+  var STALE_MIN = 25, VERY_STALE_MIN = 60; // adjusted from the data's page_cadence_min
   var state = { data: null, retrievedAt: null, lastError: null, tab: "ground_stops", q: "", nextAt: Date.now() + REFRESH_MS, loading: false };
   var store = { get: function (k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
                 set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -339,13 +339,16 @@ details[open] > summary { margin-bottom: 8px; }
     var a = [];
     if (state.lastError) a.push('<div class="notice bad" role="alert"><strong>Refresh failed</strong> at ' + z(state.lastError.at) + " (" + esc(state.lastError.msg) + ")." + (d ? " Showing the last successful report from " + z(pd(d.generated_at)) + "." : "") + "</div>");
     if (d) {
+      var cad = d.page_cadence_min || 15;
+      STALE_MIN = cad + 10; VERY_STALE_MIN = cad * 2 + 30;
       var age = minsOld(pd(d.generated_at));
       if (age > VERY_STALE_MIN) a.push('<div class="notice bad" role="alert"><strong>Stale data.</strong> The latest report is ' + Math.round(age) + " minutes old. The server collector or the publishing step may be delayed. Check FAA sources directly before relying on this page.</div>");
-      else if (age > STALE_MIN) a.push('<div class="notice warn" role="status"><strong>Data is ' + Math.round(age) + " minutes old.</strong> This page normally receives a new report every hour.</div>");
+      else if (age > STALE_MIN) a.push('<div class="notice warn" role="status"><strong>Data is ' + Math.round(age) + " minutes old.</strong> This page normally receives a new report every " + cad + " minutes.</div>");
       var ax = d.sources.airport_xml || {};
       if (!ax.ok) a.push('<div class="notice warn" role="status"><strong>FAA airport feed failed</strong> at ' + z(pd(ax.fetched_at)) + " (" + esc(ax.error || "unknown error") + "). Airport programs below are the last good report, from " + z(pd(ax.last_success_at)) + ".</div>");
       else if (ax.stale) a.push('<div class="notice warn" role="status"><strong>FAA airport feed looks stale.</strong> Its own timestamp is ' + esc(ax.source_age_min) + " minutes older than when it was fetched.</div>");
     }
+    if (d && d.page_host !== "github" && d.links && d.links.live_site) a.unshift('<div class="notice info">This is a snapshot copy. For data refreshed every 15 minutes, open the <a href="' + esc(d.links.live_site) + '" target="_blank" rel="noopener"><strong>live Groundwatch site</strong></a>.</div>');
     $("alerts").innerHTML = a.join("");
   }
 

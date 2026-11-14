@@ -5,7 +5,7 @@ on:
     - cron: "4,19,34,49 * * * *"
   push:
     branches: [main]
-    paths: ["collector/**", ".github/workflows/collect.yml"]
+    paths: ["collector/**", "site/**", "relay/**", ".github/workflows/collect.yml"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -26,6 +26,15 @@ jobs:
         run: |
           mkdir -p /tmp/out
           python3 collector/groundwatch.py /tmp/out/status.json /tmp/prev.json
+      - name: Publish website to gh-pages (single commit, force-pushed)
+        run: |
+          mkdir -p /tmp/site && cp site/index.html /tmp/site/ && touch /tmp/site/.nojekyll
+          python3 relay/build.py /tmp/out/status.json /tmp/site 15 github
+          cd /tmp/site
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name=groundwatch-bot -c user.email=groundwatch-bot@users.noreply.github.com commit -qm "site $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages
       - name: Publish data branch (single commit, force-pushed)
         run: |
           cd /tmp/out
